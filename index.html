@@ -37,6 +37,7 @@
   .tbl-wrap{max-height:60vh;overflow:auto;border:1px solid var(--line);border-radius:9px}
   .chip{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;background:#eef1f5;color:#394354;white-space:nowrap}
   .chip.s-s0{background:#eef1f5}
+  .chip.s-wait{background:#e6f4f7;color:#0e6a7d}
   .chip.s-na{background:#fff3d6;color:#8a5a00}
   .chip.s-nowa{background:#fde7df;color:#9a3412}
   .chip.s-ok{background:#dcf5e5;color:#13703a}
@@ -158,6 +159,7 @@ async function unpack(str, he = false){
 // ok (הושלם והועבר בעוגן) מוסתר מהרשימה
 const STATUSES = [
   ['s0',   'לא טופל'],
+  ['wait', 'נשלחה הודעה – ממתין לתשובה'],
   ['na',   'לא עונה'],
   ['nowa', 'ללא וואטסאפ'],
   ['ok',   'הושלם והועבר סטטוס בעוגן'],
@@ -257,7 +259,7 @@ const A = {
   tpls: load('ct_tpls', DEFAULT_TPLS),
   cands: load('ct_cands', []),
   sent: load('ct_sent', {}), // coordId → חתימת הרשימה שנשלחה אחרונה
-  tab: 'list', sel: new Set(), fCoord: ''
+  tab: 'list', sel: new Set(), view: 'pending', fCoord: ''
 };
 const saveA = () => { save('ct_coords', A.coords); save('ct_tpls', A.tpls); save('ct_cands', A.cands); save('ct_sent', A.sent); };
 const coordById = id => A.coords.find(c => c.id === id);
@@ -274,8 +276,11 @@ function renderAdmin(){
 }
 
 function panelList(){
-  const rows = A.cands.filter(c => (A.fCoord === '' || (A.fCoord === '-' ? !c.a : c.a === A.fCoord)));
+  // שתי רשימות: ממתינים לשיוך / משויכים (עם סינון לפי אחראי)
   const unassigned = A.cands.filter(c => !c.a).length;
+  const assigned = A.cands.length - unassigned;
+  const pend = A.view === 'pending';
+  const rows = A.cands.filter(c => pend ? !c.a : (c.a && (!A.fCoord || c.a === A.fCoord)));
   $('#panel').innerHTML = `
     <div class="card">
       <h2>העלאת רשימה</h2>
@@ -286,13 +291,16 @@ function panelList(){
       <div class="mute" style="margin-top:6px">נשמרים רק שם, טלפון, כתובת ותאריך. ת"ז, מייל ויישוב לא נשמרים.</div>
     </div>
     <div class="card">
-      <h2>מועמדים (${A.cands.length}, ${unassigned} לא משויכים)</h2>
-      <div class="row">
-        <select id="fCoord"><option value="">כל האחראים</option><option value="-" ${A.fCoord==='-'?'selected':''}>לא משויכים</option>${A.coords.map(c => `<option value="${c.id}" ${A.fCoord===c.id?'selected':''}>${esc(c.n)}</option>`).join('')}</select>
+      <div class="tabs">
+        <button data-view="pending" class="${pend?'on':''}">ממתינים לשיוך (${unassigned})</button>
+        <button data-view="assigned" class="${pend?'':'on'}">משויכים (${assigned})</button>
       </div>
+      ${pend ? '' : `<div class="row">
+        <select id="fCoord"><option value="">כל האחראים</option>${A.coords.map(c => `<option value="${c.id}" ${A.fCoord===c.id?'selected':''}>${esc(c.n)} (${A.cands.filter(x => x.a === c.id).length})</option>`).join('')}</select>
+      </div>`}
       <div class="row" style="margin:10px 0">
-        <select id="assignTo"><option value="">— בחר אחראי לשיוך —</option>${A.coords.map(c => `<option value="${c.id}">${esc(c.n)}</option>`).join('')}<option value="-">ביטול שיוך</option></select>
-        <button class="pri auto" id="assignBtn">שייך מסומנים (<span id="selCount">${A.sel.size}</span>)</button>
+        <select id="assignTo"><option value="">— ${pend ? 'בחר אחראי לשיוך' : 'העבר לאחראי אחר / בטל שיוך'} —</option>${A.coords.map(c => `<option value="${c.id}">${esc(c.n)}</option>`).join('')}${pend ? '' : '<option value="-">ביטול שיוך (חזרה לממתינים)</option>'}</select>
+        <button class="pri auto" id="assignBtn">${pend ? 'שייך' : 'עדכן'} מסומנים (<span id="selCount">${A.sel.size}</span>)</button>
       </div>
       ${A.coords.length ? '' : '<div class="mute" style="margin-bottom:8px">כדי לשייך מועמדים, קודם הוסף אחראים בלשונית "אחראים".</div>'}
       ${rows.length ? `<div class="tbl-wrap"><table>
@@ -301,7 +309,7 @@ function panelList(){
           <td><input type="checkbox" data-sel="${c.id}" ${A.sel.has(c.id)?'checked':''} style="width:auto"></td>
           <td>${esc(c.f)} ${esc(c.l)}</td><td>${esc(c.c)}</td><td dir="ltr" style="text-align:right">${fmtPhone(c.p)}</td><td>${esc(c.d)}</td>
           <td>${c.a && coordById(c.a) ? `<span class="chip">${esc(coordById(c.a).n)}</span>` : '<span class="mute">—</span>'}</td></tr>`).join('')}
-        </tbody></table></div>` : `<div class="empty">${A.cands.length ? 'אין תוצאות לסינון' : 'עדיין לא הועלתה רשימה'}</div>`}
+        </tbody></table></div>` : `<div class="empty">${!A.cands.length ? 'עדיין לא הועלתה רשימה' : pend ? 'כולם משויכים 👍' : 'אין משויכים בסינון הזה'}</div>`}
       ${A.cands.length ? '<div style="margin-top:10px"><button class="danger" id="clearAll">מחק את כל הרשימה</button></div>' : ''}
     </div>`;
 
@@ -317,7 +325,8 @@ function panelList(){
       A.sel.clear(); saveA(); renderAdmin(); toast(`נטענו ${list.length} מועמדים`);
     } catch (err) { alert(err.message); }
   };
-  $('#fCoord').onchange = e => { A.fCoord = e.target.value; renderAdmin(); };
+  $('#panel').querySelectorAll('[data-view]').forEach(b => b.onclick = () => { A.view = b.dataset.view; A.sel.clear(); renderAdmin(); });
+  const fc = $('#fCoord'); if (fc) fc.onchange = e => { A.fCoord = e.target.value; A.sel.clear(); renderAdmin(); };
   const upd = () => { const n = $('#selCount'); if (n) n.textContent = A.sel.size; };
   $('#panel').querySelectorAll('[data-sel]').forEach(cb => cb.onchange = () => { cb.checked ? A.sel.add(cb.dataset.sel) : A.sel.delete(cb.dataset.sel); upd(); });
   const all = $('#selAll');
@@ -607,7 +616,11 @@ function renderCoord(){
     const x = list.find(y => y.id === b.dataset.send); const i = +b.dataset.t;
     openSend({ title: t[i][0], toLabel: `אל: ${x.f} ${x.l} (${fmtPhone(x.p)})`, phone: x.p,
       text: fill(t[i][1], varsFor(x, c)),
-      onSent: () => { if (getSt(x.id).m < i + 1) setSt(x.id, { m: i + 1 }); renderCoord(); } });
+      onSent: () => {
+        const cur = getSt(x.id);
+        setSt(x.id, { m: Math.max(cur.m, i + 1), ...(cur.s === 's0' ? { s: 'wait' } : {}) });
+        renderCoord();
+      } });
   });
 }
 
