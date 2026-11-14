@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>פנייה למועמדים</title>
+<style>
+  :root{--bg:#f4f6f9;--card:#fff;--ink:#1d2533;--mute:#6b7585;--line:#e2e6ec;--pri:#1f6feb;--wa:#1fa855;--warn:#d97706;--bad:#c2410c;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink);font-size:15px}
+  header{background:#17324d;color:#fff;padding:14px 16px;position:sticky;top:0;z-index:5}
+  header h1{margin:0;font-size:18px}
+  header .sub{font-size:13px;opacity:.8;margin-top:2px}
+  main{max-width:960px;margin:0 auto;padding:14px}
+  .tabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+  .tabs button{flex:1;min-width:110px}
+  .tabs button.on{background:var(--pri);color:#fff;border-color:var(--pri)}
+  section.panel{display:none}
+  section.panel.on{display:block}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+  h2{font-size:16px;margin:0 0 10px}
+  button,.btn{font:inherit;border:1px solid var(--line);background:#fff;border-radius:9px;padding:9px 13px;cursor:pointer;color:var(--ink);text-decoration:none;display:inline-flex;align-items:center;gap:6px;justify-content:center}
+  button.pri{background:var(--pri);color:#fff;border-color:var(--pri)}
+  button.wa,.btn.wa{background:var(--wa);color:#fff;border-color:var(--wa)}
+  button.danger{color:var(--bad)}
+  button:disabled{opacity:.5;cursor:default}
+  input,select,textarea{font:inherit;border:1px solid var(--line);border-radius:9px;padding:8px 10px;background:#fff;width:100%}
+  textarea{min-height:130px;resize:vertical;line-height:1.5}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .row>*{flex:1;min-width:120px}
+  .row>.auto{flex:0 0 auto;min-width:0}
+  .mute{color:var(--mute);font-size:13px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{padding:7px 6px;border-bottom:1px solid var(--line);text-align:right;vertical-align:middle}
+  th{background:#f8f9fb;position:sticky;top:0}
+  td[dir=ltr],td:nth-child(5){white-space:nowrap}
+  .tbl-wrap{max-height:60vh;overflow:auto;border:1px solid var(--line);border-radius:9px}
+  .chip{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;background:#eef1f5;color:#394354;white-space:nowrap}
+  .chip.s-none{background:#eef1f5}
+  .chip.s-sent{background:#e3eeff;color:#1f4fa8}
+  .chip.s-yes{background:#dcf5e5;color:#13703a}
+  .chip.s-no{background:#fde7df;color:#9a3412}
+  .chip.s-na{background:#fff3d6;color:#8a5a00}
+  .vars{display:flex;flex-wrap:wrap;gap:5px;margin:6px 0}
+  .vars button{padding:3px 9px;font-size:13px;background:#f1f4f8}
+  .tpl{border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:10px}
+  .coord-item{display:flex;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .coord-item:last-child{border-bottom:0}
+  .coord-item .nm{flex:1;min-width:150px}
+  .stats{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+  .person{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:10px}
+  .person .top{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}
+  .person .name{font-weight:600;font-size:16px}
+  .person .actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+  .person .actions>*{flex:1;min-width:110px}
+  .progress{height:8px;background:#e6e9ee;border-radius:99px;overflow:hidden;margin-top:6px}
+  .progress>div{height:100%;background:var(--wa)}
+  dialog{border:0;border-radius:14px;padding:0;width:min(560px,94vw)}
+  dialog::backdrop{background:rgba(10,20,35,.45)}
+  .dlg{padding:16px}
+  .dlg h3{margin:0 0 8px}
+  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#17324d;color:#fff;padding:9px 16px;border-radius:9px;opacity:0;transition:.25s;pointer-events:none;z-index:50}
+  .toast.on{opacity:1}
+  .empty{text-align:center;color:var(--mute);padding:24px}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="hTitle">פנייה למועמדים</h1>
+  <div class="sub" id="hSub">מסך מנהל</div>
+</header>
+<main id="app"></main>
+<div class="toast" id="toast"></div>
+
+<dialog id="sendDlg"><div class="dlg">
+  <h3 id="sdTitle"></h3>
+  <div class="mute" id="sdTo"></div>
+  <textarea id="sdText" style="margin-top:8px;min-height:200px"></textarea>
+  <div class="row" style="margin-top:10px">
+    <button class="wa" id="sdSend">שלח בוואטסאפ</button>
+    <button class="auto" id="sdCancel">ביטול</button>
+  </div>
+</div></dialog>
+
+<script>
+/* ===================== כלים כלליים ===================== */
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const uid = () => Math.random().toString(36).slice(2, 9);
+function toast(msg){ const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('on'), 2000); }
+const load = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d; } catch { return d; } };
+const save = (k, v) => localStorage.setItem(k, JSON.stringify(v));
+
+// 0521234567 / 052-123-4567 / +972521234567 → 972521234567
+function normPhone(p){
+  let d = String(p ?? '').replace(/\D/g, '');
+  if (!d) return '';
+  if (d.startsWith('972')) return d;
+  if (d.startsWith('0')) return '972' + d.slice(1);
+  if (d.length === 9 && d.startsWith('5')) return '972' + d; // אקסל מוריד את ה-0
+  return d;
+}
+const localPhone = p => { const d = normPhone(p); return d.startsWith('972') ? '0' + d.slice(3) : d; };
+const fmtPhone = p => { const l = localPhone(p); return l.length === 10 ? l.slice(0,3) + '-' + l.slice(3) : l; };
+
+function fill(text, vars){ return text.replace(/\{([^{}]+)\}/g, (m, k) => (k.trim() in vars) ? vars[k.trim()] : m); }
+function varsFor(cand, coord){
+  return {
+    'שם_פרטי': cand.f || '', 'שם_משפחה': cand.l || '', 'שם_מלא': `${cand.f||''} ${cand.l||''}`.trim(),
+    'כתובת': cand.c || '',
+    'שם_אחראי': coord?.n || '', 'טלפון_אחראי': coord?.p ? localPhone(coord.p) : '', 'תפקיד_אחראי': coord?.r || ''
+  };
+}
+const VAR_NAMES = ['שם_פרטי','שם_משפחה','שם_מלא','כתובת','שם_אחראי','טלפון_אחראי','תפקיד_אחראי'];
+const waLink = (phone, text) => `https://wa.me/${normPhone(phone)}?text=${encodeURIComponent(text)}`;
+
+/* ===== דחיסה לקישור: JSON → deflate → base64url ===== */
+async function pack(obj){
+  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+  const cs = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+  const buf = new Uint8Array(await new Response(cs).arrayBuffer());
+  let bin = ''; buf.forEach(b => bin += String.fromCharCode(b));
+  return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+async function unpack(str){
+  const b64 = str.replace(/-/g,'+').replace(/_/g,'/');
+  const bin = atob(b64); const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
+  const ds = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return JSON.parse(await new Response(ds).text());
+}
+
+/* ===================== סטטוסים ===================== */
+// s0 = לא טופל, sN = נשלחה הודעה N, yes/no/na = תוצאה
+const RESULT = { yes: 'מעוניין', no: 'לא מעוניין', na: 'לא עונה' };
+function statusLabel(s){ if (!s || s === 's0') return 'לא טופל'; if (RESULT[s]) return RESULT[s]; return 'נשלחה הודעה ' + s.slice(1); }
+function statusClass(s){ if (!s || s === 's0') return 's-none'; if (RESULT[s]) return 's-' + s; return 's-sent'; }
+const statusKey = 'ct_status';
+const getStatuses = () => load(statusKey, {});
+function setStatus(id, s){ const all = getStatuses(); all[id] = s; save(statusKey, all); }
+
+/* ===================== שליחה ===================== */
+let sendCtx = null;
+function openSend({title, toLabel, phone, text, onSent}){
+  sendCtx = { phone, onSent };
+  $('#sdTitle').textContent = title;
+  $('#sdTo').textContent = toLabel;
+  $('#sdText').value = text;
+  $('#sendDlg').showModal();
+}
+$('#sdCancel').onclick = () => $('#sendDlg').close();
+$('#sdSend').onclick = () => {
+  const { phone, onSent } = sendCtx;
+  window.open(waLink(phone, $('#sdText').value), '_blank');
+  $('#sendDlg').close();
+  onSent && onSent();
+};
+
+/* ===================== קריאת קובץ ===================== */
+function parseCSV(text){
+  text = text.replace(/^﻿/, '');
+  const rows = []; let row = [], cell = '', q = false;
+  for (let i = 0; i < text.length; i++){
+    const ch = text[i];
+    if (q){
+      if (ch === '"'){ if (text[i+1] === '"'){ cell += '"'; i++; } else q = false; }
+      else cell += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === ',') { row.push(cell); cell = ''; }
+    else if (ch === '\n' || ch === '\r'){
+      if (ch === '\r' && text[i+1] === '\n') i++;
+      row.push(cell); cell = ''; if (row.some(c => c.trim() !== '')) rows.push(row); row = [];
+    } else cell += ch;
+  }
+  row.push(cell); if (row.some(c => c.trim() !== '')) rows.push(row);
+  return rows;
+}
+function loadSheetJS(){
+  return new Promise((res, rej) => {
+    if (window.XLSX) return res(window.XLSX);
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    s.onload = () => res(window.XLSX); s.onerror = () => rej(new Error('לא הצלחתי לטעון את קורא האקסל. נסה לשמור כ-CSV.'));
+    document.head.appendChild(s);
+  });
+}
+async function readFile(file){
+  if (/\.csv$/i.test(file.name)) {
+    const buf = await file.arrayBuffer();
+    let text = new TextDecoder('utf-8').decode(buf);
+    if (text.includes('�')) text = new TextDecoder('windows-1255').decode(buf); // CSV מאקסל עברי ישן
+    return parseCSV(text);
+  }
+  const XLSX = await loadSheetJS();
+  const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', raw: false });
+  return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' });
+}
+// זיהוי עמודות לפי מילות מפתח. ת"ז, מייל ורחוב לא נשמרים.
+function mapRows(rows){
+  const head = rows[0].map(h => String(h).trim());
+  const find = (...keys) => head.findIndex(h => keys.some(k => h.includes(k)));
+  const ix = {
+    f: find('שם פרטי'), l: find('שם משפחה'),
+    c: find('רחוב', 'כתובת'),
+    p: find('סלולרי', 'טלפון', 'נייד'),
+    d: find('נוצר', 'תאריך')
+  };
+  if (ix.p < 0) throw new Error('לא נמצאה עמודת טלפון בקובץ');
+  const out = [];
+  for (const r of rows.slice(1)){
+    const phone = normPhone(r[ix.p]);
+    if (!phone) continue;
+    out.push({ id: phone, f: (r[ix.f] ?? '').trim(), l: (r[ix.l] ?? '').trim(), c: ix.c >= 0 ? (r[ix.c] ?? '').trim() : '', p: phone, d: ix.d >= 0 ? String(r[ix.d] ?? '').split(' ')[0] : '' });
+  }
+  return out;
+}
+
+/* ===================== מצב מנהל ===================== */
+const DEFAULT_TPLS = [
+  { id: uid(), title: 'הודעה 1 – פנייה ראשונה', text: 'שלום {שם_פרטי}, כאן {שם_אחראי}, {תפקיד_אחראי}.\nראיתי שנרשמת אצלנו ורציתי לבדוק אם אתה עדיין מעוניין להצטרף.\nאשמח לתשובה 🙏' },
+  { id: uid(), title: 'הודעה 2 – המשך', text: 'היי {שם_פרטי}, תודה על התשובה!\nהשלב הבא הוא ...\nלכל שאלה אני זמין במספר {טלפון_אחראי}.\n{שם_אחראי}' }
+];
+const A = {
+  coords: load('ct_coords', []),
+  tpls: load('ct_tpls', DEFAULT_TPLS),
+  cands: load('ct_cands', []),
+  tab: 'list', sel: new Set(), fCoord: ''
+};
+const saveA = () => { save('ct_coords', A.coords); save('ct_tpls', A.tpls); save('ct_cands', A.cands); };
+const coordById = id => A.coords.find(c => c.id === id);
+
+function renderAdmin(){
+  $('#hTitle').textContent = 'פנייה למועמדים';
+  $('#hSub').textContent = 'מסך מנהל';
+  const tabs = [['list','מועמדים ושיוך'],['coords','אחראים'],['tpls','נוסחי הודעות'],['links','קישורים לאחראים']];
+  $('#app').innerHTML = `
+    <div class="tabs">${tabs.map(([k,v]) => `<button data-tab="${k}" class="${A.tab===k?'on':''}">${v}</button>`).join('')}</div>
+    <section class="panel on" id="panel"></section>`;
+  $('#app').querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { A.tab = b.dataset.tab; renderAdmin(); });
+  ({ list: panelList, coords: panelCoords, tpls: panelTpls, links: panelLinks })[A.tab]();
+}
+
+function panelList(){
+  const rows = A.cands.filter(c => (A.fCoord === '' || (A.fCoord === '-' ? !c.a : c.a === A.fCoord)));
+  const unassigned = A.cands.filter(c => !c.a).length;
+  $('#panel').innerHTML = `
+    <div class="card">
+      <h2>העלאת רשימה</h2>
+      <div class="row">
+        <input type="file" id="file" accept=".csv,.xlsx,.xls">
+        <label class="auto mute"><input type="checkbox" id="merge" checked style="width:auto"> מיזוג עם הרשימה הקיימת (שומר שיוכים)</label>
+      </div>
+      <div class="mute" style="margin-top:6px">נשמרים רק שם, טלפון, כתובת ותאריך. ת"ז, מייל ויישוב לא נשמרים.</div>
+    </div>
+    <div class="card">
+      <h2>מועמדים (${A.cands.length}, ${unassigned} לא משויכים)</h2>
+      <div class="row">
+        <select id="fCoord"><option value="">כל האחראים</option><option value="-" ${A.fCoord==='-'?'selected':''}>לא משויכים</option>${A.coords.map(c => `<option value="${c.id}" ${A.fCoord===c.id?'selected':''}>${esc(c.n)}</option>`).join('')}</select>
+      </div>
+      <div class="row" style="margin:10px 0">
+        <select id="assignTo"><option value="">— בחר אחראי לשיוך —</option>${A.coords.map(c => `<option value="${c.id}">${esc(c.n)}</option>`).join('')}<option value="-">ביטול שיוך</option></select>
+        <button class="pri auto" id="assignBtn">שייך מסומנים (<span id="selCount">${A.sel.size}</span>)</button>
+      </div>
+      ${A.coords.length ? '' : '<div class="mute" style="margin-bottom:8px">כדי לשייך מועמדים, קודם הוסף אחראים בלשונית "אחראים".</div>'}
+      ${rows.length ? `<div class="tbl-wrap"><table>
+        <thead><tr><th style="width:34px"><input type="checkbox" id="selAll" style="width:auto"></th><th>שם</th><th>כתובת</th><th>טלפון</th><th>נוצר</th><th>אחראי</th></tr></thead>
+        <tbody>${rows.map(c => `<tr>
+          <td><input type="checkbox" data-sel="${c.id}" ${A.sel.has(c.id)?'checked':''} style="width:auto"></td>
+          <td>${esc(c.f)} ${esc(c.l)}</td><td>${esc(c.c)}</td><td dir="ltr" style="text-align:right">${fmtPhone(c.p)}</td><td>${esc(c.d)}</td>
+          <td>${c.a && coordById(c.a) ? `<span class="chip">${esc(coordById(c.a).n)}</span>` : '<span class="mute">—</span>'}</td></tr>`).join('')}
+        </tbody></table></div>` : `<div class="empty">${A.cands.length ? 'אין תוצאות לסינון' : 'עדיין לא הועלתה רשימה'}</div>`}
+      ${A.cands.length ? '<div style="margin-top:10px"><button class="danger" id="clearAll">מחק את כל הרשימה</button></div>' : ''}
+    </div>`;
+
+  $('#file').onchange = async e => {
+    const file = e.target.files[0]; if (!file) return;
+    try {
+      const list = mapRows(await readFile(file));
+      if ($('#merge').checked){
+        const old = new Map(A.cands.map(c => [c.id, c]));
+        list.forEach(c => { const o = old.get(c.id); if (o) c.a = o.a; old.set(c.id, c); });
+        A.cands = [...old.values()];
+      } else A.cands = list;
+      A.sel.clear(); saveA(); renderAdmin(); toast(`נטענו ${list.length} מועמדים`);
+    } catch (err) { alert(err.message); }
+  };
+  $('#fCoord').onchange = e => { A.fCoord = e.target.value; renderAdmin(); };
+  const upd = () => { const n = $('#selCount'); if (n) n.textContent = A.sel.size; };
+  $('#panel').querySelectorAll('[data-sel]').forEach(cb => cb.onchange = () => { cb.checked ? A.sel.add(cb.dataset.sel) : A.sel.delete(cb.dataset.sel); upd(); });
+  const all = $('#selAll');
+  if (all) all.onchange = () => { rows.forEach(c => all.checked ? A.sel.add(c.id) : A.sel.delete(c.id)); renderAdmin(); };
+  $('#assignBtn').onclick = () => {
+    const to = $('#assignTo').value;
+    if (!to) return toast('בחר אחראי');
+    if (!A.sel.size) return toast('סמן מועמדים');
+    A.cands.forEach(c => { if (A.sel.has(c.id)) c.a = to === '-' ? '' : to; });
+    const n = A.sel.size; A.sel.clear(); saveA(); renderAdmin();
+    toast(to === '-' ? `בוטל שיוך ל-${n}` : `${n} שויכו ל${coordById(to).n}`);
+  };
+  const clr = $('#clearAll');
+  if (clr) clr.onclick = () => { if (confirm('למחוק את כל המועמדים?')) { A.cands = []; A.sel.clear(); saveA(); renderAdmin(); } };
+}
+
+function panelCoords(){
+  $('#panel').innerHTML = `
+    <div class="card">
+      <h2>הוספת אחראי</h2>
+      <div class="row">
+        <input id="cN" placeholder="שם">
+        <input id="cP" placeholder="טלפון" inputmode="tel">
+        <input id="cR" placeholder="תפקיד (למשל: אחראי גיוס אזור צפון)">
+        <button class="pri auto" id="cAdd">הוסף</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>אחראים (${A.coords.length})</h2>
+      ${A.coords.length ? A.coords.map(c => `
+        <div class="coord-item">
+          <input class="nm" data-f="n" data-id="${c.id}" value="${esc(c.n)}">
+          <input style="flex:0 0 130px" data-f="p" data-id="${c.id}" value="${esc(localPhone(c.p))}" inputmode="tel">
+          <input class="nm" data-f="r" data-id="${c.id}" value="${esc(c.r)}">
+          <span class="mute">${A.cands.filter(x => x.a === c.id).length} מועמדים</span>
+          <button class="danger auto" data-del="${c.id}">מחק</button>
+        </div>`).join('') : '<div class="empty">אין אחראים עדיין</div>'}
+    </div>`;
+  $('#cAdd').onclick = () => {
+    const n = $('#cN').value.trim(); if (!n) return toast('חסר שם');
+    A.coords.push({ id: uid(), n, p: normPhone($('#cP').value), r: $('#cR').value.trim() });
+    saveA(); renderAdmin();
+  };
+  $('#panel').querySelectorAll('[data-f]').forEach(inp => inp.onchange = () => {
+    const c = coordById(inp.dataset.id); const f = inp.dataset.f;
+    c[f] = f === 'p' ? normPhone(inp.value) : inp.value.trim(); saveA(); toast('נשמר');
+  });
+  $('#panel').querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+    if (!confirm('למחוק את האחראי? המועמדים שלו יחזרו ל"לא משויך".')) return;
+    A.coords = A.coords.filter(c => c.id !== b.dataset.del);
+    A.cands.forEach(c => { if (c.a === b.dataset.del) c.a = ''; });
+    saveA(); renderAdmin();
+  });
+}
+
+function panelTpls(){
+  const sample = { f: 'דוד', l: 'כהן', c: 'נחל שורק 5' };
+  const sc = A.coords[0] || { n: 'ישראל ישראלי', p: '972501234567', r: 'אחראי אזור' };
+  $('#panel').innerHTML = `
+    <div class="card">
+      <h2>נוסחי הודעות</h2>
+      <div class="mute">לחיצה על משתנה מוסיפה אותו למקום הסמן. בשליחה המשתנים מתמלאים לפי המועמד והאחראי.</div>
+      <div id="tplList" style="margin-top:10px">
+      ${A.tpls.map((t, i) => `
+        <div class="tpl">
+          <div class="row"><input data-tt="${t.id}" value="${esc(t.title)}"><button class="danger auto" data-tdel="${t.id}" ${A.tpls.length<2?'disabled':''}>מחק</button></div>
+          <div class="vars">${VAR_NAMES.map(v => `<button data-ins="${t.id}" data-v="${v}">{${v}}</button>`).join('')}</div>
+          <textarea data-tx="${t.id}">${esc(t.text)}</textarea>
+          <div class="mute" style="margin-top:6px">תצוגה מקדימה:</div>
+          <div style="white-space:pre-wrap;background:#f6f8fa;border-radius:8px;padding:8px;margin-top:4px" data-prev="${t.id}">${esc(fill(t.text, varsFor(sample, sc)))}</div>
+          <div class="mute" style="margin-top:4px">שליחה של הודעה זו מסמנת "נשלחה הודעה ${i+1}"</div>
+        </div>`).join('')}
+      </div>
+      <button id="tAdd">+ הוסף נוסח</button>
+    </div>`;
+  $('#panel').querySelectorAll('[data-tt]').forEach(inp => inp.oninput = () => { A.tpls.find(t => t.id === inp.dataset.tt).title = inp.value; saveA(); });
+  $('#panel').querySelectorAll('[data-tx]').forEach(ta => ta.oninput = () => {
+    const t = A.tpls.find(t => t.id === ta.dataset.tx); t.text = ta.value; saveA();
+    $(`[data-prev="${t.id}"]`).textContent = fill(t.text, varsFor(sample, sc));
+  });
+  $('#panel').querySelectorAll('[data-ins]').forEach(b => b.onclick = () => {
+    const ta = $(`[data-tx="${b.dataset.ins}"]`); const ins = `{${b.dataset.v}}`;
+    const s = ta.selectionStart ?? ta.value.length;
+    ta.value = ta.value.slice(0, s) + ins + ta.value.slice(ta.selectionEnd ?? s);
+    ta.focus(); ta.selectionStart = ta.selectionEnd = s + ins.length; ta.oninput();
+  });
+  $('#panel').querySelectorAll('[data-tdel]').forEach(b => b.onclick = () => { if (confirm('למחוק נוסח?')) { A.tpls = A.tpls.filter(t => t.id !== b.dataset.tdel); saveA(); renderAdmin(); } });
+  $('#tAdd').onclick = () => { A.tpls.push({ id: uid(), title: `הודעה ${A.tpls.length + 1}`, text: 'שלום {שם_פרטי}, ' }); saveA(); renderAdmin(); };
+}
+
+async function coordLink(c){
+  const list = A.cands.filter(x => x.a === c.id).map(x => [x.f, x.l, x.c, x.p, x.d]);
+  const payload = { v: 1, c: { n: c.n, p: c.p, r: c.r }, t: A.tpls.map(t => [t.title, t.text]), l: list };
+  return location.href.split('#')[0] + '#d=' + await pack(payload);
+}
+function panelLinks(){
+  const withCands = A.coords.filter(c => A.cands.some(x => x.a === c.id));
+  $('#panel').innerHTML = `
+    <div class="card">
+      <h2>קישור אישי לכל אחראי</h2>
+      <div class="mute">הקישור כולל את הרשימה של האחראי ואת הנוסחים, כפי שהם עכשיו. אם משנים שיוך או נוסח, שולחים לו קישור חדש. הסימונים שכבר עשה נשמרים אצלו.</div>
+      ${withCands.length ? withCands.map(c => `
+        <div class="coord-item">
+          <div class="nm"><b>${esc(c.n)}</b> <span class="mute">· ${A.cands.filter(x => x.a === c.id).length} מועמדים</span></div>
+          <button class="auto" data-open="${c.id}">פתח</button>
+          <button class="auto" data-copy="${c.id}">העתק קישור</button>
+          <button class="wa auto" data-wa="${c.id}" ${c.p?'':'disabled title="אין טלפון לאחראי"'}>שלח לו בוואטסאפ</button>
+        </div>`).join('') : '<div class="empty">אין אחראים עם מועמדים משויכים</div>'}
+    </div>`;
+  $('#panel').querySelectorAll('[data-open]').forEach(b => b.onclick = async () => window.open(await coordLink(coordById(b.dataset.open)), '_blank'));
+  $('#panel').querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
+    const url = await coordLink(coordById(b.dataset.copy));
+    try { await navigator.clipboard.writeText(url); toast('הקישור הועתק'); } catch { prompt('העתק את הקישור:', url); }
+  });
+  $('#panel').querySelectorAll('[data-wa]').forEach(b => b.onclick = async () => {
+    const c = coordById(b.dataset.wa); const url = await coordLink(c);
+    openSend({ title: 'שליחת קישור לאחראי', toLabel: `אל: ${c.n} (${fmtPhone(c.p)})`, phone: c.p,
+      text: `היי ${c.n}, זו רשימת המועמדים שלך לפנייה (${A.cands.filter(x => x.a === c.id).length}).\nכל כפתור בקישור פותח וואטסאפ עם הודעה מוכנה:\n${url}` });
+  });
+}
+
+/* ===================== מצב אחראי ===================== */
+const C = { data: null, filter: 'all' };
+function renderCoord(){
+  const { c, t, l } = C.data;
+  const st = getStatuses();
+  const list = l.map(([f, la, ci, p, d]) => ({ f, l: la, c: ci, p, d, id: p, s: st[p] || 's0' }));
+  const counts = list.reduce((m, x) => (m[x.s] = (m[x.s] || 0) + 1, m), {});
+  const done = list.filter(x => x.s !== 's0').length;
+  const keys = ['s0', ...t.map((_, i) => 's' + (i + 1)), 'yes', 'no', 'na'];
+  const shown = list.filter(x => C.filter === 'all' || x.s === C.filter);
+  $('#hTitle').textContent = `שלום ${c.n}`;
+  $('#hSub').textContent = `${list.length} מועמדים לפנייה · ${done} טופלו`;
+  $('#app').innerHTML = `
+    <div class="card">
+      <div class="progress"><div style="width:${list.length ? done / list.length * 100 : 0}%"></div></div>
+      <div class="stats">
+        <button class="${C.filter==='all'?'pri':''}" data-flt="all">הכל (${list.length})</button>
+        ${keys.filter(k => counts[k]).map(k => `<button class="${C.filter===k?'pri':''}" data-flt="${k}">${statusLabel(k)} (${counts[k]})</button>`).join('')}
+      </div>
+    </div>
+    ${shown.length ? shown.map(x => `
+      <div class="person">
+        <div class="top">
+          <div><div class="name">${esc(x.f)} ${esc(x.l)}</div><div class="mute">${esc(x.c)} · <span dir="ltr">${fmtPhone(x.p)}</span>${x.d ? ' · נרשם ' + esc(x.d) : ''}</div></div>
+          <span class="chip ${statusClass(x.s)}">${statusLabel(x.s)}</span>
+        </div>
+        <div class="actions">
+          ${t.map(([title], i) => `<button class="wa" data-send="${x.id}" data-t="${i}">${esc(title.split('–')[0].trim() || 'הודעה ' + (i+1))}</button>`).join('')}
+          <a class="btn" href="tel:${localPhone(x.p)}">📞 חיוג</a>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <select data-st="${x.id}">${keys.map(k => `<option value="${k}" ${x.s===k?'selected':''}>${statusLabel(k)}</option>`).join('')}</select>
+        </div>
+      </div>`).join('') : '<div class="empty">אין מועמדים בסינון הזה</div>'}`;
+  $('#app').querySelectorAll('[data-flt]').forEach(b => b.onclick = () => { C.filter = b.dataset.flt; renderCoord(); });
+  $('#app').querySelectorAll('[data-st]').forEach(s => s.onchange = () => { setStatus(s.dataset.st, s.value); renderCoord(); });
+  $('#app').querySelectorAll('[data-send]').forEach(b => b.onclick = () => {
+    const x = list.find(y => y.id === b.dataset.send); const i = +b.dataset.t;
+    openSend({ title: t[i][0], toLabel: `אל: ${x.f} ${x.l} (${fmtPhone(x.p)})`, phone: x.p,
+      text: fill(t[i][1], varsFor(x, c)),
+      onSent: () => {
+        // מקדם סטטוס רק קדימה: לא דורס תוצאה (מעוניין/לא) ולא מחזיר להודעה קודמת
+        const cur = getStatuses()[x.id] || 's0';
+        if (/^s\d+$/.test(cur) && +cur.slice(1) < i + 1) setStatus(x.id, 's' + (i + 1));
+        renderCoord();
+      } });
+  });
+}
+
+/* ===================== אתחול ===================== */
+(async function init(){
+  const m = location.hash.match(/^#d=(.+)$/);
+  if (m) {
+    try { C.data = await unpack(m[1]); renderCoord(); return; }
+    catch { $('#app').innerHTML = '<div class="empty">הקישור פגום או חתוך. בקש מהמנהל קישור חדש.</div>'; return; }
+  }
+  renderAdmin();
+})();
+window.addEventListener('hashchange', () => location.reload());
+</script>
+</body>
+</html>
