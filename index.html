@@ -36,11 +36,13 @@
   td[dir=ltr],td:nth-child(5){white-space:nowrap}
   .tbl-wrap{max-height:60vh;overflow:auto;border:1px solid var(--line);border-radius:9px}
   .chip{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;background:#eef1f5;color:#394354;white-space:nowrap}
-  .chip.s-none{background:#eef1f5}
-  .chip.s-sent{background:#e3eeff;color:#1f4fa8}
-  .chip.s-yes{background:#dcf5e5;color:#13703a}
-  .chip.s-no{background:#fde7df;color:#9a3412}
+  .chip.s-s0{background:#eef1f5}
   .chip.s-na{background:#fff3d6;color:#8a5a00}
+  .chip.s-nowa{background:#fde7df;color:#9a3412}
+  .chip.s-ok{background:#dcf5e5;color:#13703a}
+  .chip.s-pend{background:#e3eeff;color:#1f4fa8}
+  .chip.s-oth{background:#efe6fb;color:#5b2a9a}
+  .chip.warn{background:#fff3d6;color:#8a5a00}
   .vars{display:flex;flex-wrap:wrap;gap:5px;margin:6px 0}
   .vars button{padding:3px 9px;font-size:13px;background:#f1f4f8}
   .tpl{border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:10px}
@@ -115,28 +117,59 @@ const VAR_NAMES = ['שם_פרטי','שם_משפחה','שם_מלא','כתובת',
 const waLink = (phone, text) => `https://wa.me/${normPhone(phone)}?text=${encodeURIComponent(text)}`;
 
 /* ===== דחיסה לקישור: JSON → deflate → base64url ===== */
-async function pack(obj){
-  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+// קידוד קומפקטי: ASCII = בייט אחד, עברית = בייט אחד, השאר = 3 בייטים. חוסך הרבה לעומת UTF-8.
+function heEncode(str){
+  const out = [];
+  for (let i = 0; i < str.length; i++){
+    const c = str.charCodeAt(i);
+    if (c < 0x80) out.push(c);
+    else if (c >= 0x0590 && c < 0x0600) out.push(0x80 + c - 0x0590);
+    else out.push(0xFF, c >> 8, c & 0xFF);
+  }
+  return new Uint8Array(out);
+}
+function heDecode(bytes){
+  let s = '';
+  for (let i = 0; i < bytes.length; i++){
+    const b = bytes[i];
+    if (b < 0x80) s += String.fromCharCode(b);
+    else if (b < 0xF0) s += String.fromCharCode(0x0590 + b - 0x80);
+    else { s += String.fromCharCode((bytes[i+1] << 8) | bytes[i+2]); i += 2; }
+  }
+  return s;
+}
+async function pack(obj, he = true){
+  const json = JSON.stringify(obj);
+  const bytes = he ? heEncode(json) : new TextEncoder().encode(json);
   const cs = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'));
   const buf = new Uint8Array(await new Response(cs).arrayBuffer());
   let bin = ''; buf.forEach(b => bin += String.fromCharCode(b));
   return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 }
-async function unpack(str){
+async function unpack(str, he = false){
   const b64 = str.replace(/-/g,'+').replace(/_/g,'/');
   const bin = atob(b64); const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
   const ds = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-  return JSON.parse(await new Response(ds).text());
+  const out = new Uint8Array(await new Response(ds).arrayBuffer());
+  return JSON.parse(he ? heDecode(out) : new TextDecoder().decode(out));
 }
 
 /* ===================== סטטוסים ===================== */
-// s0 = לא טופל, sN = נשלחה הודעה N, yes/no/na = תוצאה
-const RESULT = { yes: 'מעוניין', no: 'לא מעוניין', na: 'לא עונה' };
-function statusLabel(s){ if (!s || s === 's0') return 'לא טופל'; if (RESULT[s]) return RESULT[s]; return 'נשלחה הודעה ' + s.slice(1); }
-function statusClass(s){ if (!s || s === 's0') return 's-none'; if (RESULT[s]) return 's-' + s; return 's-sent'; }
-const statusKey = 'ct_status';
+// ok (הושלם והועבר בעוגן) מוסתר מהרשימה
+const STATUSES = [
+  ['s0',   'לא טופל'],
+  ['na',   'לא עונה'],
+  ['nowa', 'ללא וואטסאפ'],
+  ['ok',   'הושלם והועבר סטטוס בעוגן'],
+  ['pend', 'הושלם ועוד לא עבר סטטוס בעוגן'],
+  ['oth',  'אחר']
+];
+const ST_LABEL = Object.fromEntries(STATUSES);
+const statusLabel = s => ST_LABEL[s] || ST_LABEL.s0;
+const statusKey = 'ct_st2'; // { phone: { s, n: פירוט ל"אחר", m: ההודעה האחרונה שנשלחה } }
 const getStatuses = () => load(statusKey, {});
-function setStatus(id, s){ const all = getStatuses(); all[id] = s; save(statusKey, all); }
+function getSt(id){ const r = getStatuses()[id] || {}; return { s: ST_LABEL[r.s] ? r.s : 's0', n: r.n || '', m: r.m || 0 }; }
+function setSt(id, patch){ const all = getStatuses(); all[id] = { ...getSt(id), ...patch }; save(statusKey, all); }
 
 /* ===================== שליחה ===================== */
 let sendCtx = null;
@@ -223,9 +256,10 @@ const A = {
   coords: load('ct_coords', []),
   tpls: load('ct_tpls', DEFAULT_TPLS),
   cands: load('ct_cands', []),
+  sent: load('ct_sent', {}), // coordId → חתימת הרשימה שנשלחה אחרונה
   tab: 'list', sel: new Set(), fCoord: ''
 };
-const saveA = () => { save('ct_coords', A.coords); save('ct_tpls', A.tpls); save('ct_cands', A.cands); };
+const saveA = () => { save('ct_coords', A.coords); save('ct_tpls', A.tpls); save('ct_cands', A.cands); save('ct_sent', A.sent); };
 const coordById = id => A.coords.find(c => c.id === id);
 
 function renderAdmin(){
@@ -354,8 +388,7 @@ function panelTpls(){
           <textarea data-tx="${t.id}">${esc(t.text)}</textarea>
           <div class="mute" style="margin-top:6px">תצוגה מקדימה:</div>
           <div style="white-space:pre-wrap;background:#f6f8fa;border-radius:8px;padding:8px;margin-top:4px" data-prev="${t.id}">${esc(fill(t.text, varsFor(sample, sc)))}</div>
-          <div class="mute" style="margin-top:4px">שליחה של הודעה זו מסמנת "נשלחה הודעה ${i+1}"</div>
-        </div>`).join('')}
+                </div>`).join('')}
       </div>
       <button id="tAdd">+ הוסף נוסח</button>
     </div>`;
@@ -374,34 +407,48 @@ function panelTpls(){
   $('#tAdd').onclick = () => { A.tpls.push({ id: uid(), title: `הודעה ${A.tpls.length + 1}`, text: 'שלום {שם_פרטי}, ' }); saveA(); renderAdmin(); };
 }
 
-async function coordLink(c){
-  const list = A.cands.filter(x => x.a === c.id).map(x => [x.f, x.l, x.c, x.p, x.d]);
-  const payload = { v: 1, c: { n: c.n, p: c.p, r: c.r }, t: A.tpls.map(t => [t.title, t.text]), l: list };
-  return location.href.split('#')[0] + '#d=' + await pack(payload);
+// טלפון נשמר בקישור בלי 972 כדי לקצר
+const shortPhone = p => normPhone(p).replace(/^972/, '');
+function coordPayload(c){
+  const list = A.cands.filter(x => x.a === c.id).map(x => [x.f, x.l, x.c, shortPhone(x.p), x.d]);
+  return { v: 2, c: [c.n, shortPhone(c.p), c.r], t: A.tpls.map(t => [t.title, t.text]), l: list };
+}
+const sigOf = c => { const j = JSON.stringify(coordPayload(c)); let h = 0; for (let i = 0; i < j.length; i++) h = (h * 31 + j.charCodeAt(i)) | 0; return String(h); };
+async function coordLink(c, mark = true){
+  const url = location.href.split('#')[0] + '#z=' + await pack(coordPayload(c));
+  if (mark){ A.sent[c.id] = sigOf(c); saveA(); }
+  return url;
 }
 function panelLinks(){
-  const withCands = A.coords.filter(c => A.cands.some(x => x.a === c.id));
+  const withCands = A.coords.filter(c => A.cands.some(x => x.a === c.id) || A.sent[c.id]);
   $('#panel').innerHTML = `
     <div class="card">
       <h2>קישור אישי לכל אחראי</h2>
-      <div class="mute">הקישור כולל את הרשימה של האחראי ואת הנוסחים, כפי שהם עכשיו. אם משנים שיוך או נוסח, שולחים לו קישור חדש. הסימונים שכבר עשה נשמרים אצלו.</div>
-      ${withCands.length ? withCands.map(c => `
+      <div class="mute">הקישור כולל את הרשימה והנוסחים כפי שהם עכשיו. אם הרשימה השתנתה (נוספו או נמחקו מועמדים, שונה נוסח) יופיע סימון, ושולחים קישור מעודכן. הסימונים שהאחראי כבר עשה נשמרים אצלו.</div>
+      ${withCands.length ? withCands.map(c => {
+        const n = A.cands.filter(x => x.a === c.id).length;
+        const state = !A.sent[c.id] ? '<span class="chip">עוד לא נשלח</span>' : A.sent[c.id] !== sigOf(c) ? '<span class="chip warn">הרשימה השתנתה – צריך לרענן</span>' : '<span class="chip s-ok">מעודכן</span>';
+        return `
         <div class="coord-item">
-          <div class="nm"><b>${esc(c.n)}</b> <span class="mute">· ${A.cands.filter(x => x.a === c.id).length} מועמדים</span></div>
+          <div class="nm"><b>${esc(c.n)}</b> <span class="mute">· ${n} מועמדים</span> ${state}</div>
           <button class="auto" data-open="${c.id}">פתח</button>
           <button class="auto" data-copy="${c.id}">העתק קישור</button>
-          <button class="wa auto" data-wa="${c.id}" ${c.p?'':'disabled title="אין טלפון לאחראי"'}>שלח לו בוואטסאפ</button>
-        </div>`).join('') : '<div class="empty">אין אחראים עם מועמדים משויכים</div>'}
+          <button class="wa auto" data-wa="${c.id}" ${c.p?'':'disabled title="אין טלפון לאחראי"'}>${A.sent[c.id] ? '🔄 שלח קישור מעודכן' : 'שלח לו בוואטסאפ'}</button>
+        </div>`; }).join('') : '<div class="empty">אין אחראים עם מועמדים משויכים</div>'}
     </div>`;
-  $('#panel').querySelectorAll('[data-open]').forEach(b => b.onclick = async () => window.open(await coordLink(coordById(b.dataset.open)), '_blank'));
+  $('#panel').querySelectorAll('[data-open]').forEach(b => b.onclick = async () => window.open(await coordLink(coordById(b.dataset.open), false), '_blank'));
   $('#panel').querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
     const url = await coordLink(coordById(b.dataset.copy));
     try { await navigator.clipboard.writeText(url); toast('הקישור הועתק'); } catch { prompt('העתק את הקישור:', url); }
+    renderAdmin();
   });
   $('#panel').querySelectorAll('[data-wa]').forEach(b => b.onclick = async () => {
-    const c = coordById(b.dataset.wa); const url = await coordLink(c);
-    openSend({ title: 'שליחת קישור לאחראי', toLabel: `אל: ${c.n} (${fmtPhone(c.p)})`, phone: c.p,
-      text: `היי ${c.n}, זו רשימת המועמדים שלך לפנייה (${A.cands.filter(x => x.a === c.id).length}).\nכל כפתור בקישור פותח וואטסאפ עם הודעה מוכנה:\n${url}` });
+    const c = coordById(b.dataset.wa); const upd = !!A.sent[c.id]; const url = await coordLink(c, false);
+    const n = A.cands.filter(x => x.a === c.id).length;
+    openSend({ title: upd ? 'קישור מעודכן לאחראי' : 'שליחת קישור לאחראי', toLabel: `אל: ${c.n} (${fmtPhone(c.p)})`, phone: c.p,
+      text: upd ? `היי ${c.n}, הרשימה שלך עודכנה (${n} מועמדים). הסימונים שכבר עשית נשמרו:\n${url}`
+                : `היי ${c.n}, זו רשימת המועמדים שלך לפנייה (${n}).\nכל כפתור בקישור פותח וואטסאפ עם הודעה מוכנה:\n${url}`,
+      onSent: () => { A.sent[c.id] = sigOf(c); saveA(); renderAdmin(); } });
   });
 }
 
@@ -409,56 +456,69 @@ function panelLinks(){
 const C = { data: null, filter: 'all' };
 function renderCoord(){
   const { c, t, l } = C.data;
-  const st = getStatuses();
-  const list = l.map(([f, la, ci, p, d]) => ({ f, l: la, c: ci, p, d, id: p, s: st[p] || 's0' }));
+  const list = l.map(([f, la, ci, p, d]) => ({ f, l: la, c: ci, p, d, id: normPhone(p), ...getSt(normPhone(p)) }));
   const counts = list.reduce((m, x) => (m[x.s] = (m[x.s] || 0) + 1, m), {});
   const done = list.filter(x => x.s !== 's0').length;
-  const keys = ['s0', ...t.map((_, i) => 's' + (i + 1)), 'yes', 'no', 'na'];
-  const shown = list.filter(x => C.filter === 'all' || x.s === C.filter);
+  const active = list.filter(x => x.s !== 'ok');
+  const shown = C.filter === 'all' ? active : list.filter(x => x.s === C.filter);
   $('#hTitle').textContent = `שלום ${c.n}`;
-  $('#hSub').textContent = `${list.length} מועמדים לפנייה · ${done} טופלו`;
+  $('#hSub').textContent = `${list.length} מועמדים · ${done} טופלו · ${active.length} נותרו`;
   $('#app').innerHTML = `
     <div class="card">
       <div class="progress"><div style="width:${list.length ? done / list.length * 100 : 0}%"></div></div>
       <div class="stats">
-        <button class="${C.filter==='all'?'pri':''}" data-flt="all">הכל (${list.length})</button>
-        ${keys.filter(k => counts[k]).map(k => `<button class="${C.filter===k?'pri':''}" data-flt="${k}">${statusLabel(k)} (${counts[k]})</button>`).join('')}
+        <button class="${C.filter==='all'?'pri':''}" data-flt="all">ממתינים (${active.length})</button>
+        ${STATUSES.filter(([k]) => counts[k]).map(([k, v]) => `<button class="${C.filter===k?'pri':''}" data-flt="${k}">${k === 'ok' ? '✔ הועברו בעוגן' : v} (${counts[k]})</button>`).join('')}
       </div>
+      <button class="wa" id="summary" style="width:100%">📋 שלח סיכום לקבוצה בוואטסאפ</button>
     </div>
     ${shown.length ? shown.map(x => `
       <div class="person">
         <div class="top">
-          <div><div class="name">${esc(x.f)} ${esc(x.l)}</div><div class="mute">${esc(x.c)} · <span dir="ltr">${fmtPhone(x.p)}</span>${x.d ? ' · נרשם ' + esc(x.d) : ''}</div></div>
-          <span class="chip ${statusClass(x.s)}">${statusLabel(x.s)}</span>
+          <div><div class="name">${esc(x.f)} ${esc(x.l)}</div><div class="mute">${esc(x.c)}${x.c ? ' · ' : ''}<span dir="ltr">${fmtPhone(x.p)}</span>${x.d ? ' · נרשם ' + esc(x.d) : ''}${x.m ? ' · נשלחה הודעה ' + x.m : ''}</div></div>
+          <span class="chip s-${x.s}">${statusLabel(x.s)}</span>
         </div>
         <div class="actions">
           ${t.map(([title], i) => `<button class="wa" data-send="${x.id}" data-t="${i}">${esc(title.split('–')[0].trim() || 'הודעה ' + (i+1))}</button>`).join('')}
           <a class="btn" href="tel:${localPhone(x.p)}">📞 חיוג</a>
         </div>
         <div class="row" style="margin-top:8px">
-          <select data-st="${x.id}">${keys.map(k => `<option value="${k}" ${x.s===k?'selected':''}>${statusLabel(k)}</option>`).join('')}</select>
+          <select data-st="${x.id}">${STATUSES.map(([k, v]) => `<option value="${k}" ${x.s===k?'selected':''}>${v}</option>`).join('')}</select>
+          ${x.s === 'oth' ? `<input data-note="${x.id}" value="${esc(x.n)}" placeholder="פירוט...">` : ''}
         </div>
-      </div>`).join('') : '<div class="empty">אין מועמדים בסינון הזה</div>'}`;
+      </div>`).join('') : `<div class="empty">${C.filter === 'all' && list.length ? 'כל הכבוד, אין ממתינים 🎉' : 'אין מועמדים בסינון הזה'}</div>`}`;
   $('#app').querySelectorAll('[data-flt]').forEach(b => b.onclick = () => { C.filter = b.dataset.flt; renderCoord(); });
-  $('#app').querySelectorAll('[data-st]').forEach(s => s.onchange = () => { setStatus(s.dataset.st, s.value); renderCoord(); });
+  $('#app').querySelectorAll('[data-st]').forEach(s => s.onchange = () => {
+    setSt(s.dataset.st, { s: s.value });
+    if (s.value === 'ok') toast('הועבר להועברו בעוגן ונעלם מהרשימה');
+    renderCoord();
+    if (s.value === 'oth') $(`[data-note="${s.dataset.st}"]`)?.focus();
+  });
+  $('#app').querySelectorAll('[data-note]').forEach(inp => inp.onchange = () => { setSt(inp.dataset.note, { n: inp.value.trim() }); toast('נשמר'); });
+  $('#summary').onclick = () => {
+    const lines = list.filter(x => x.s !== 's0').map(x => `${x.f} ${x.l}`.trim() + ' – ' + statusLabel(x.s) + (x.s === 'oth' && x.n ? `: ${x.n}` : ''));
+    if (!lines.length) return toast('עוד לא סומן אף מועמד');
+    const left = counts.s0 || 0;
+    const text = `סיכום פנייה – ${c.n}\n\n${lines.join('\n')}${left ? `\n\nעוד לא טופלו: ${left}` : ''}`;
+    window.open('https://wa.me/?text=' + encodeURIComponent(text), '_blank');
+  };
   $('#app').querySelectorAll('[data-send]').forEach(b => b.onclick = () => {
     const x = list.find(y => y.id === b.dataset.send); const i = +b.dataset.t;
     openSend({ title: t[i][0], toLabel: `אל: ${x.f} ${x.l} (${fmtPhone(x.p)})`, phone: x.p,
       text: fill(t[i][1], varsFor(x, c)),
-      onSent: () => {
-        // מקדם סטטוס רק קדימה: לא דורס תוצאה (מעוניין/לא) ולא מחזיר להודעה קודמת
-        const cur = getStatuses()[x.id] || 's0';
-        if (/^s\d+$/.test(cur) && +cur.slice(1) < i + 1) setStatus(x.id, 's' + (i + 1));
-        renderCoord();
-      } });
+      onSent: () => { if (getSt(x.id).m < i + 1) setSt(x.id, { m: i + 1 }); renderCoord(); } });
   });
 }
 
 /* ===================== אתחול ===================== */
 (async function init(){
-  const m = location.hash.match(/^#d=(.+)$/);
+  const m = location.hash.match(/^#([dz])=(.+)$/);
   if (m) {
-    try { C.data = await unpack(m[1]); renderCoord(); return; }
+    try {
+      const d = await unpack(m[2], m[1] === 'z');
+      if (Array.isArray(d.c)) d.c = { n: d.c[0], p: d.c[1], r: d.c[2] }; // v2
+      C.data = d; renderCoord(); return;
+    }
     catch { $('#app').innerHTML = '<div class="empty">הקישור פגום או חתוך. בקש מהמנהל קישור חדש.</div>'; return; }
   }
   renderAdmin();
