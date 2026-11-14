@@ -36,11 +36,13 @@
   td[dir=ltr],td:nth-child(5){white-space:nowrap}
   .tbl-wrap{max-height:60vh;overflow:auto;border:1px solid var(--line);border-radius:9px}
   .chip{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;background:#eef1f5;color:#394354;white-space:nowrap}
-  .chip.s-none{background:#eef1f5}
-  .chip.s-sent{background:#e3eeff;color:#1f4fa8}
-  .chip.s-yes{background:#dcf5e5;color:#13703a}
-  .chip.s-no{background:#fde7df;color:#9a3412}
+  .chip.s-s0{background:#eef1f5}
   .chip.s-na{background:#fff3d6;color:#8a5a00}
+  .chip.s-nowa{background:#fde7df;color:#9a3412}
+  .chip.s-ok{background:#dcf5e5;color:#13703a}
+  .chip.s-pend{background:#e3eeff;color:#1f4fa8}
+  .chip.s-oth{background:#efe6fb;color:#5b2a9a}
+  .chip.warn{background:#fff3d6;color:#8a5a00}
   .vars{display:flex;flex-wrap:wrap;gap:5px;margin:6px 0}
   .vars button{padding:3px 9px;font-size:13px;background:#f1f4f8}
   .tpl{border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:10px}
@@ -115,28 +117,59 @@ const VAR_NAMES = ['שם_פרטי','שם_משפחה','שם_מלא','כתובת',
 const waLink = (phone, text) => `https://wa.me/${normPhone(phone)}?text=${encodeURIComponent(text)}`;
 
 /* ===== דחיסה לקישור: JSON → deflate → base64url ===== */
-async function pack(obj){
-  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+// קידוד קומפקטי: ASCII = בייט אחד, עברית = בייט אחד, השאר = 3 בייטים. חוסך הרבה לעומת UTF-8.
+function heEncode(str){
+  const out = [];
+  for (let i = 0; i < str.length; i++){
+    const c = str.charCodeAt(i);
+    if (c < 0x80) out.push(c);
+    else if (c >= 0x0590 && c < 0x0600) out.push(0x80 + c - 0x0590);
+    else out.push(0xFF, c >> 8, c & 0xFF);
+  }
+  return new Uint8Array(out);
+}
+function heDecode(bytes){
+  let s = '';
+  for (let i = 0; i < bytes.length; i++){
+    const b = bytes[i];
+    if (b < 0x80) s += String.fromCharCode(b);
+    else if (b < 0xF0) s += String.fromCharCode(0x0590 + b - 0x80);
+    else { s += String.fromCharCode((bytes[i+1] << 8) | bytes[i+2]); i += 2; }
+  }
+  return s;
+}
+async function pack(obj, he = true){
+  const json = JSON.stringify(obj);
+  const bytes = he ? heEncode(json) : new TextEncoder().encode(json);
   const cs = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'));
   const buf = new Uint8Array(await new Response(cs).arrayBuffer());
   let bin = ''; buf.forEach(b => bin += String.fromCharCode(b));
   return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 }
-async function unpack(str){
+async function unpack(str, he = false){
   const b64 = str.replace(/-/g,'+').replace(/_/g,'/');
   const bin = atob(b64); const bytes = Uint8Array.from(bin, c => c.charCodeAt(0));
   const ds = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-  return JSON.parse(await new Response(ds).text());
+  const out = new Uint8Array(await new Response(ds).arrayBuffer());
+  return JSON.parse(he ? heDecode(out) : new TextDecoder().decode(out));
 }
 
 /* ===================== סטטוסים ===================== */
-// s0 = לא טופל, sN = נשלחה הודעה N, yes/no/na = תוצאה
-const RESULT = { yes: 'מעוניין', no: 'לא מעוניין', na: 'לא עונה' };
-function statusLabel(s){ if (!s || s === 's0') return 'לא טופל'; if (RESULT[s]) return RESULT[s]; return 'נשלחה הודעה ' + s.slice(1); }
-function statusClass(s){ if (!s || s === 's0') return 's-none'; if (RESULT[s]) return 's-' + s; return 's-sent'; }
-const statusKey = 'ct_status';
+// ok (הושלם והועבר בעוגן) מוסתר מהרשימה
+const STATUSES = [
+  ['s0',   'לא טופל'],
+  ['na',   'לא עונה'],
+  ['nowa', 'ללא וואטסאפ'],
+  ['ok',   'הושלם והועבר סטטוס בעוגן'],
+  ['pend', 'הושלם ועוד לא עבר סטטוס בעוגן'],
+  ['oth',  'אחר']
+];
+const ST_LABEL = Object.fromEntries(STATUSES);
+const statusLabel = s => ST_LABEL[s] || ST_LABEL.s0;
+const statusKey = 'ct_st2'; // { phone: { s, n: פירוט ל"אחר", m: ההודעה האחרונה שנשלחה } }
 const getStatuses = () => load(statusKey, {});
-function setStatus(id, s){ const all = getStatuses(); all[id] = s; save(statusKey, all); }
+function getSt(id){ const r = getStatuses()[id] || {}; return { s: ST_LABEL[r.s] ? r.s : 's0', n: r.n || '', m: r.m || 0 }; }
+function setSt(id, patch){ const all = getStatuses(); all[id] = { ...getSt(id), ...patch }; save(statusKey, all); }
 
 /* ===================== שליחה ===================== */
 let sendCtx = null;
@@ -223,9 +256,10 @@ const A = {
   coords: load('ct_coords', []),
   tpls: load('ct_tpls', DEFAULT_TPLS),
   cands: load('ct_cands', []),
+  sent: load('ct_sent', {}), // coordId → חתימת הרשימה שנשלחה אחרונה
   tab: 'list', sel: new Set(), fCoord: ''
 };
-const saveA = () => { save('ct_coords', A.coords); save('ct_tpls', A.tpls); save('ct_cands', A.cands); };
+const saveA = () => { save('ct_coords', A.coords); save('ct_tpls', A.tpls); save('ct_cands', A.cands); save('ct_sent', A.sent); };
 const coordById = id => A.coords.find(c => c.id === id);
 
 function renderAdmin(){
@@ -354,8 +388,7 @@ function panelTpls(){
           <textarea data-tx="${t.id}">${esc(t.text)}</textarea>
           <div class="mute" style="margin-top:6px">תצוגה מקדימה:</div>
           <div style="white-space:pre-wrap;background:#f6f8fa;border-radius:8px;padding:8px;margin-top:4px" data-prev="${t.id}">${esc(fill(t.text, varsFor(sample, sc)))}</div>
-          <div class="mute" style="margin-top:4px">שליחה של הודעה זו מסמנת "נשלחה הודעה ${i+1}"</div>
-        </div>`).join('')}
+                </div>`).join('')}
       </div>
       <button id="tAdd">+ הוסף נוסח</button>
     </div>`;
@@ -374,91 +407,233 @@ function panelTpls(){
   $('#tAdd').onclick = () => { A.tpls.push({ id: uid(), title: `הודעה ${A.tpls.length + 1}`, text: 'שלום {שם_פרטי}, ' }); saveA(); renderAdmin(); };
 }
 
-async function coordLink(c){
-  const list = A.cands.filter(x => x.a === c.id).map(x => [x.f, x.l, x.c, x.p, x.d]);
-  const payload = { v: 1, c: { n: c.n, p: c.p, r: c.r }, t: A.tpls.map(t => [t.title, t.text]), l: list };
-  return location.href.split('#')[0] + '#d=' + await pack(payload);
+// טלפון נשמר בקישור בלי 972 כדי לקצר
+const shortPhone = p => normPhone(p).replace(/^972/, '');
+function coordPayload(c){
+  const list = A.cands.filter(x => x.a === c.id).map(x => [x.f, x.l, x.c, shortPhone(x.p), x.d]);
+  return { v: 2, c: [c.n, shortPhone(c.p), c.r], t: A.tpls.map(t => [t.title, t.text]), l: list };
 }
+const sigOf = c => { const j = JSON.stringify(coordPayload(c)); let h = 0; for (let i = 0; i < j.length; i++) h = (h * 31 + j.charCodeAt(i)) | 0; return String(h); };
+/* ===== אחסון בגיטהאב: כל אחראי מקבל קובץ מוצפן בענף data. המפתח נמצא רק בקישור. ===== */
+const b64u = buf => { let bin = ''; new Uint8Array(buf).forEach(x => bin += String.fromCharCode(x)); return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); };
+const unb64u = s => Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')), ch => ch.charCodeAt(0));
+const rid = n => b64u(crypto.getRandomValues(new Uint8Array(n)));
+async function aesKey(k){ return crypto.subtle.importKey('raw', unb64u(k), 'AES-GCM', false, ['encrypt','decrypt']); }
+async function encryptStr(str, k){
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await aesKey(k), new TextEncoder().encode(str));
+  return JSON.stringify({ iv: b64u(iv), ct: b64u(ct) });
+}
+async function decryptStr(file, k){
+  const { iv, ct } = JSON.parse(file);
+  return new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64u(iv) }, await aesKey(k), unb64u(ct)));
+}
+// owner/repo לפי כתובת GitHub Pages (yairkad.github.io/contact-tool)
+function repoFromLocation(){
+  const m = location.hostname.match(/^([^.]+)\.github\.io$/i);
+  return m ? `${m[1]}/${location.pathname.split('/').filter(Boolean)[0] || m[1] + '.github.io'}` : '';
+}
+const DATA_BRANCH = 'data';
+const GH = { get token(){ return localStorage.getItem('ct_gh_token') || ''; }, get repo(){ return localStorage.getItem('ct_gh_repo') || repoFromLocation(); } };
+async function gh(path, opt = {}){
+  const r = await fetch(`https://api.github.com/repos/${GH.repo}${path}`, { ...opt, cache: 'no-store',
+    headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${GH.token}`, ...(opt.headers || {}) } });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`GitHub ${r.status}: ${(await r.json().catch(() => ({}))).message || ''}`);
+  return r.json();
+}
+async function ensureBranch(){
+  if (await gh(`/branches/${DATA_BRANCH}`)) return;
+  const repo = await gh(''); if (!repo) throw new Error('הריפו לא נמצא או שאין לטוקן גישה אליו');
+  const ref = await gh(`/git/ref/heads/${repo.default_branch}`);
+  await gh('/git/refs', { method: 'POST', body: JSON.stringify({ ref: `refs/heads/${DATA_BRANCH}`, sha: ref.object.sha }) });
+}
+async function publish(c){
+  if (!c.fid){ c.fid = rid(6); c.key = rid(16); saveA(); }
+  await ensureBranch();
+  const path = `/contents/data/${c.fid}.json`;
+  const cur = await gh(`${path}?ref=${DATA_BRANCH}`);
+  const body = await encryptStr(await pack(coordPayload(c)), c.key);
+  await gh(path, { method: 'PUT', body: JSON.stringify({ message: 'update list', branch: DATA_BRANCH, sha: cur?.sha,
+    content: btoa(unescape(encodeURIComponent(body))) }) });
+  A.sent[c.id] = sigOf(c); saveA();
+}
+// קריאה ללא טוקן (ריפו ציבורי)
+async function fetchPublished(repo, fid, key){
+  const r = await fetch(`https://api.github.com/repos/${repo}/contents/data/${fid}.json?ref=${DATA_BRANCH}`, { cache: 'no-store', headers: { Accept: 'application/vnd.github.raw' } });
+  if (!r.ok) throw new Error(r.status === 404 ? 'הרשימה לא נמצאה' : 'שגיאה בטעינה (' + r.status + ')');
+  return unpack(await decryptStr(await r.text(), key), true);
+}
+const baseUrl = () => location.href.split('#')[0];
+function shortLink(c){
+  const extra = GH.repo !== repoFromLocation() ? '.' + GH.repo : '';
+  return `${baseUrl()}#k=${c.fid}.${c.key}${extra}`;
+}
+// קישור ארוך (ללא גיטהאב) – גיבוי
+async function longLink(c){ return baseUrl() + '#z=' + await pack(coordPayload(c)); }
+
 function panelLinks(){
-  const withCands = A.coords.filter(c => A.cands.some(x => x.a === c.id));
+  const withCands = A.coords.filter(c => A.cands.some(x => x.a === c.id) || A.sent[c.id]);
+  const ready = !!(GH.token && GH.repo);
   $('#panel').innerHTML = `
     <div class="card">
+      <h2>חיבור לגיטהאב ${ready ? '<span class="chip s-ok">מחובר</span>' : '<span class="chip warn">לא מחובר</span>'}</h2>
+      <div class="mute">הרשימות נשמרות מוצפנות בריפו (ענף <b>data</b>), והקישור לאחראי קצר. מספיק להגדיר פעם אחת בכל דפדפן של מנהל.</div>
+      <details ${ready ? '' : 'open'} style="margin-top:8px">
+        <summary>הגדרות</summary>
+        <ol class="mute" style="line-height:1.7">
+          <li>בגיטהאב: Settings ← Developer settings ← Personal access tokens ← <b>Fine-grained tokens</b> ← Generate new token</li>
+          <li>Repository access: <b>Only select repositories</b> ← בוחרים את הריפו של הכלי</li>
+          <li>Permissions ← Repository permissions ← <b>Contents: Read and write</b></li>
+          <li>מעתיקים את הטוקן ומדביקים כאן. הוא נשמר רק בדפדפן הזה.</li>
+        </ol>
+        <div class="row">
+          <input id="ghTok" type="password" placeholder="github_pat_..." value="${esc(GH.token)}">
+          <input id="ghRepo" placeholder="owner/repo" value="${esc(GH.repo)}" dir="ltr">
+          <button class="pri auto" id="ghSave">שמור ובדוק</button>
+        </div>
+      </details>
+    </div>
+    <div class="card">
       <h2>קישור אישי לכל אחראי</h2>
-      <div class="mute">הקישור כולל את הרשימה של האחראי ואת הנוסחים, כפי שהם עכשיו. אם משנים שיוך או נוסח, שולחים לו קישור חדש. הסימונים שכבר עשה נשמרים אצלו.</div>
-      ${withCands.length ? withCands.map(c => `
+      <div class="mute">${ready ? 'הקישור של כל אחראי קבוע. כשהרשימה משתנה לוחצים "פרסם עדכון", והאחראי לוחץ אצלו "רענן רשימה". לא צריך לשלוח קישור חדש.' : 'בלי חיבור לגיטהאב נשלח קישור ארוך שהרשימה בתוכו. אחרי שינוי צריך לשלוח קישור חדש.'}</div>
+      ${withCands.length ? withCands.map(c => {
+        const n = A.cands.filter(x => x.a === c.id).length;
+        const stale = A.sent[c.id] && A.sent[c.id] !== sigOf(c);
+        const state = !A.sent[c.id] ? '<span class="chip">עוד לא נשלח</span>' : stale ? '<span class="chip warn">הרשימה השתנתה</span>' : '<span class="chip s-ok">מעודכן</span>';
+        return `
         <div class="coord-item">
-          <div class="nm"><b>${esc(c.n)}</b> <span class="mute">· ${A.cands.filter(x => x.a === c.id).length} מועמדים</span></div>
+          <div class="nm"><b>${esc(c.n)}</b> <span class="mute">· ${n} מועמדים</span> ${state}</div>
+          ${ready && c.fid && stale ? `<button class="pri auto" data-pub="${c.id}">🔄 פרסם עדכון</button>` : ''}
           <button class="auto" data-open="${c.id}">פתח</button>
           <button class="auto" data-copy="${c.id}">העתק קישור</button>
           <button class="wa auto" data-wa="${c.id}" ${c.p?'':'disabled title="אין טלפון לאחראי"'}>שלח לו בוואטסאפ</button>
-        </div>`).join('') : '<div class="empty">אין אחראים עם מועמדים משויכים</div>'}
+        </div>`; }).join('') : '<div class="empty">אין אחראים עם מועמדים משויכים</div>'}
     </div>`;
-  $('#panel').querySelectorAll('[data-open]').forEach(b => b.onclick = async () => window.open(await coordLink(coordById(b.dataset.open)), '_blank'));
-  $('#panel').querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
-    const url = await coordLink(coordById(b.dataset.copy));
+
+  $('#ghSave').onclick = async () => {
+    localStorage.setItem('ct_gh_token', $('#ghTok').value.trim());
+    localStorage.setItem('ct_gh_repo', $('#ghRepo').value.trim());
+    try { const r = await gh(''); if (!r) throw new Error('הריפו לא נמצא או שאין לטוקן גישה אליו');
+      if (r.private) alert('שים לב: הריפו פרטי, האחראים לא יוכלו לטעון ממנו את הרשימה. צריך ריפו ציבורי (הקבצים מוצפנים).');
+      toast('מחובר ✓'); } catch (e) { alert(e.message); }
+    renderAdmin();
+  };
+  // מחזיר קישור: מפרסם בגיטהאב אם מחובר, אחרת קישור ארוך
+  const getLink = async (c, mark = true) => {
+    if (!ready){ const u = await longLink(c); if (mark){ A.sent[c.id] = sigOf(c); saveA(); } return u; }
+    if (!c.fid || A.sent[c.id] !== sigOf(c)) await publish(c);
+    return shortLink(c);
+  };
+  const busy = (b, fn) => async () => { const t = b.innerHTML; b.disabled = true; b.textContent = '...';
+    try { await fn(); } catch (e) { alert(e.message); } finally { b.disabled = false; b.innerHTML = t; } };
+  $('#panel').querySelectorAll('[data-pub]').forEach(b => b.onclick = busy(b, async () => { await publish(coordById(b.dataset.pub)); toast('עודכן. האחראי ילחץ "רענן רשימה"'); renderAdmin(); }));
+  $('#panel').querySelectorAll('[data-open]').forEach(b => b.onclick = busy(b, async () => { const w = window.open('', '_blank'); w.location = await getLink(coordById(b.dataset.open), false); renderAdmin(); }));
+  $('#panel').querySelectorAll('[data-copy]').forEach(b => b.onclick = busy(b, async () => {
+    const url = await getLink(coordById(b.dataset.copy));
     try { await navigator.clipboard.writeText(url); toast('הקישור הועתק'); } catch { prompt('העתק את הקישור:', url); }
-  });
-  $('#panel').querySelectorAll('[data-wa]').forEach(b => b.onclick = async () => {
-    const c = coordById(b.dataset.wa); const url = await coordLink(c);
+    renderAdmin();
+  }));
+  $('#panel').querySelectorAll('[data-wa]').forEach(b => b.onclick = busy(b, async () => {
+    const c = coordById(b.dataset.wa); const url = await getLink(c, false);
+    const n = A.cands.filter(x => x.a === c.id).length;
     openSend({ title: 'שליחת קישור לאחראי', toLabel: `אל: ${c.n} (${fmtPhone(c.p)})`, phone: c.p,
-      text: `היי ${c.n}, זו רשימת המועמדים שלך לפנייה (${A.cands.filter(x => x.a === c.id).length}).\nכל כפתור בקישור פותח וואטסאפ עם הודעה מוכנה:\n${url}` });
-  });
+      text: `היי ${c.n}, זו רשימת המועמדים שלך לפנייה (${n}).\nכל כפתור בקישור פותח וואטסאפ עם הודעה מוכנה${ready ? '.\nאם אעדכן את הרשימה, לחץ שם על "רענן רשימה"' : ''}:\n${url}`,
+      onSent: () => { A.sent[c.id] = sigOf(c); saveA(); renderAdmin(); } });
+  }));
 }
 
 /* ===================== מצב אחראי ===================== */
-const C = { data: null, filter: 'all' };
+const C = { data: null, filter: 'all', src: null };
 function renderCoord(){
   const { c, t, l } = C.data;
-  const st = getStatuses();
-  const list = l.map(([f, la, ci, p, d]) => ({ f, l: la, c: ci, p, d, id: p, s: st[p] || 's0' }));
+  const list = l.map(([f, la, ci, p, d]) => ({ f, l: la, c: ci, p, d, id: normPhone(p), ...getSt(normPhone(p)) }));
   const counts = list.reduce((m, x) => (m[x.s] = (m[x.s] || 0) + 1, m), {});
   const done = list.filter(x => x.s !== 's0').length;
-  const keys = ['s0', ...t.map((_, i) => 's' + (i + 1)), 'yes', 'no', 'na'];
-  const shown = list.filter(x => C.filter === 'all' || x.s === C.filter);
+  const active = list.filter(x => x.s !== 'ok');
+  const shown = C.filter === 'all' ? active : list.filter(x => x.s === C.filter);
   $('#hTitle').textContent = `שלום ${c.n}`;
-  $('#hSub').textContent = `${list.length} מועמדים לפנייה · ${done} טופלו`;
+  $('#hSub').textContent = `${list.length} מועמדים · ${done} טופלו · ${active.length} נותרו`;
   $('#app').innerHTML = `
     <div class="card">
       <div class="progress"><div style="width:${list.length ? done / list.length * 100 : 0}%"></div></div>
       <div class="stats">
-        <button class="${C.filter==='all'?'pri':''}" data-flt="all">הכל (${list.length})</button>
-        ${keys.filter(k => counts[k]).map(k => `<button class="${C.filter===k?'pri':''}" data-flt="${k}">${statusLabel(k)} (${counts[k]})</button>`).join('')}
+        <button class="${C.filter==='all'?'pri':''}" data-flt="all">ממתינים (${active.length})</button>
+        ${STATUSES.filter(([k]) => counts[k]).map(([k, v]) => `<button class="${C.filter===k?'pri':''}" data-flt="${k}">${k === 'ok' ? '✔ הועברו בעוגן' : v} (${counts[k]})</button>`).join('')}
+      </div>
+      <div class="row">
+        <button class="wa" id="summary">📋 שלח סיכום לקבוצה בוואטסאפ</button>
+        ${C.src ? '<button class="auto" id="refresh">🔄 רענן רשימה</button>' : ''}
       </div>
     </div>
     ${shown.length ? shown.map(x => `
       <div class="person">
         <div class="top">
-          <div><div class="name">${esc(x.f)} ${esc(x.l)}</div><div class="mute">${esc(x.c)} · <span dir="ltr">${fmtPhone(x.p)}</span>${x.d ? ' · נרשם ' + esc(x.d) : ''}</div></div>
-          <span class="chip ${statusClass(x.s)}">${statusLabel(x.s)}</span>
+          <div><div class="name">${esc(x.f)} ${esc(x.l)}</div><div class="mute">${esc(x.c)}${x.c ? ' · ' : ''}<span dir="ltr">${fmtPhone(x.p)}</span>${x.d ? ' · נרשם ' + esc(x.d) : ''}${x.m ? ' · נשלחה הודעה ' + x.m : ''}</div></div>
+          <span class="chip s-${x.s}">${statusLabel(x.s)}</span>
         </div>
         <div class="actions">
           ${t.map(([title], i) => `<button class="wa" data-send="${x.id}" data-t="${i}">${esc(title.split('–')[0].trim() || 'הודעה ' + (i+1))}</button>`).join('')}
           <a class="btn" href="tel:${localPhone(x.p)}">📞 חיוג</a>
         </div>
         <div class="row" style="margin-top:8px">
-          <select data-st="${x.id}">${keys.map(k => `<option value="${k}" ${x.s===k?'selected':''}>${statusLabel(k)}</option>`).join('')}</select>
+          <select data-st="${x.id}">${STATUSES.map(([k, v]) => `<option value="${k}" ${x.s===k?'selected':''}>${v}</option>`).join('')}</select>
+          ${x.s === 'oth' ? `<input data-note="${x.id}" value="${esc(x.n)}" placeholder="פירוט...">` : ''}
         </div>
-      </div>`).join('') : '<div class="empty">אין מועמדים בסינון הזה</div>'}`;
+      </div>`).join('') : `<div class="empty">${C.filter === 'all' && list.length ? 'כל הכבוד, אין ממתינים 🎉' : 'אין מועמדים בסינון הזה'}</div>`}`;
   $('#app').querySelectorAll('[data-flt]').forEach(b => b.onclick = () => { C.filter = b.dataset.flt; renderCoord(); });
-  $('#app').querySelectorAll('[data-st]').forEach(s => s.onchange = () => { setStatus(s.dataset.st, s.value); renderCoord(); });
+  $('#app').querySelectorAll('[data-st]').forEach(s => s.onchange = () => {
+    setSt(s.dataset.st, { s: s.value });
+    if (s.value === 'ok') toast('הועבר להועברו בעוגן ונעלם מהרשימה');
+    renderCoord();
+    if (s.value === 'oth') $(`[data-note="${s.dataset.st}"]`)?.focus();
+  });
+  $('#app').querySelectorAll('[data-note]').forEach(inp => inp.onchange = () => { setSt(inp.dataset.note, { n: inp.value.trim() }); toast('נשמר'); });
+  const rf = $('#refresh');
+  if (rf) rf.onclick = async () => {
+    rf.disabled = true; rf.textContent = 'מרענן...';
+    try { const before = C.data.l.length; await loadShared(); toast(`הרשימה עודכנה (${C.data.l.length - before >= 0 ? '+' : ''}${C.data.l.length - before})`); }
+    catch (e) { toast(e.message); }
+    renderCoord();
+  };
+  $('#summary').onclick = () => {
+    const lines = list.filter(x => x.s !== 's0').map(x => `${x.f} ${x.l}`.trim() + ' – ' + statusLabel(x.s) + (x.s === 'oth' && x.n ? `: ${x.n}` : ''));
+    if (!lines.length) return toast('עוד לא סומן אף מועמד');
+    const left = counts.s0 || 0;
+    const text = `סיכום פנייה – ${c.n}\n\n${lines.join('\n')}${left ? `\n\nעוד לא טופלו: ${left}` : ''}`;
+    window.open('https://wa.me/?text=' + encodeURIComponent(text), '_blank');
+  };
   $('#app').querySelectorAll('[data-send]').forEach(b => b.onclick = () => {
     const x = list.find(y => y.id === b.dataset.send); const i = +b.dataset.t;
     openSend({ title: t[i][0], toLabel: `אל: ${x.f} ${x.l} (${fmtPhone(x.p)})`, phone: x.p,
       text: fill(t[i][1], varsFor(x, c)),
-      onSent: () => {
-        // מקדם סטטוס רק קדימה: לא דורס תוצאה (מעוניין/לא) ולא מחזיר להודעה קודמת
-        const cur = getStatuses()[x.id] || 's0';
-        if (/^s\d+$/.test(cur) && +cur.slice(1) < i + 1) setStatus(x.id, 's' + (i + 1));
-        renderCoord();
-      } });
+      onSent: () => { if (getSt(x.id).m < i + 1) setSt(x.id, { m: i + 1 }); renderCoord(); } });
   });
 }
 
 /* ===================== אתחול ===================== */
+const norm2 = d => { if (Array.isArray(d.c)) d.c = { n: d.c[0], p: d.c[1], r: d.c[2] }; return d; };
+async function loadShared(){
+  const { repo, fid, key } = C.src;
+  C.data = norm2(await fetchPublished(repo, fid, key));
+  save('ct_cache_' + fid, C.data); // לשימוש אם אין רשת
+}
 (async function init(){
-  const m = location.hash.match(/^#d=(.+)$/);
+  const k = location.hash.match(/^#k=([\w-]+)\.([\w-]+)(?:\.(.+))?$/);
+  if (k) {
+    C.src = { fid: k[1], key: k[2], repo: k[3] ? decodeURIComponent(k[3]) : repoFromLocation() };
+    $('#app').innerHTML = '<div class="empty">טוען רשימה...</div>';
+    try { await loadShared(); }
+    catch (e) {
+      const cached = load('ct_cache_' + C.src.fid, null);
+      if (!cached){ $('#app').innerHTML = `<div class="empty">${esc(e.message)}. נסה שוב או בקש מהמנהל קישור חדש.</div>`; return; }
+      C.data = cached; toast('מוצגת הגרסה השמורה');
+    }
+    renderCoord(); return;
+  }
+  const m = location.hash.match(/^#([dz])=(.+)$/);
   if (m) {
-    try { C.data = await unpack(m[1]); renderCoord(); return; }
+    try { C.data = norm2(await unpack(m[2], m[1] === 'z')); renderCoord(); return; }
     catch { $('#app').innerHTML = '<div class="empty">הקישור פגום או חתוך. בקש מהמנהל קישור חדש.</div>'; return; }
   }
   renderAdmin();
